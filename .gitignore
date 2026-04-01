@@ -9,6 +9,8 @@ python/.venv/
 python/.condaenv/
 python/__pycache__/
 python/**/*.pyc
+python/checkpoints/
+python/logs/
 Plugins/*/Binaries/
 Plugins/*/Intermediate/
 Plugins/*/Saved/
