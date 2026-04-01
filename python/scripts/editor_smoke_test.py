@@ -3,9 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from gymnasium.vector.vector_env import AutoresetMode
-from schola.core.protocols.protobuf.gRPC import gRPCProtocol
-from schola.core.simulators.unreal.editor import UnrealEditor
+from gym_env import UnrealScholaGymEnv
 
 
 def parse_args() -> argparse.Namespace:
@@ -19,48 +17,22 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-
-    protocol = gRPCProtocol(url=args.host, port=args.port, environment_start_timeout=45)
-    simulator = UnrealEditor()
-
-    protocol.start()
-    simulator.start(protocol.properties)
-    protocol.send_startup_msg(auto_reset_type=AutoresetMode.DISABLED)
+    env = UnrealScholaGymEnv(host=args.host, port=args.port, timeout_seconds=45)
 
     try:
-        ids, agent_types, observation_spaces, action_spaces = protocol.get_definition()
-        if not ids or not ids[0]:
-            raise RuntimeError("No Schola environments or agents were discovered in the running editor.")
+        print(f"Connected to env 0, agent {env.agent_id}")
+        print(f"Agent type: {env.agent_type}")
+        print(f"Observation space: {env.observation_space}")
+        print(f"Action space: {env.action_space}")
 
-        env_id = 0
-        agent_id = ids[env_id][0]
-        observation_space = observation_spaces[env_id][agent_id]
-        action_space = action_spaces[env_id][agent_id]
-
-        print(f"Connected to env {env_id}, agent {agent_id}")
-        print(f"Agent type: {agent_types[env_id][agent_id]}")
-        print(f"Observation space: {observation_space}")
-        print(f"Action space: {action_space}")
-
-        observations, infos = protocol.send_reset_msg(seeds=[args.seed], options=[{}])
-        observation = observations[env_id][agent_id]
-        info = infos[env_id][agent_id]
+        observation, info = env.reset(seed=args.seed)
 
         print("Reset observation:", _format_value(observation))
         print("Reset info:", info)
 
         for step_index in range(1, args.steps + 1):
-            action = action_space.sample()
-            observations, rewards, terminateds, truncateds, infos, _, _ = protocol.send_action_msg(
-                {env_id: {agent_id: action}},
-                {agent_id: action_space},
-            )
-
-            observation = observations[env_id][agent_id]
-            reward = rewards[env_id][agent_id]
-            terminated = terminateds[env_id][agent_id]
-            truncated = truncateds[env_id][agent_id]
-            info = infos[env_id][agent_id]
+            action = env.action_space.sample()
+            observation, reward, terminated, truncated, info = env.step(action)
 
             print(
                 f"step={step_index} action={_format_value(action)} "
@@ -74,8 +46,7 @@ def main() -> int:
 
         return 0
     finally:
-        protocol.close()
-        simulator.stop()
+        env.close()
 
 
 def _format_value(value: Any) -> str:

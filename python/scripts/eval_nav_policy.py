@@ -3,12 +3,10 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
-from typing import Any
 
-from gymnasium.vector.vector_env import AutoresetMode
-from schola.core.protocols.protobuf.gRPC import gRPCProtocol
-from schola.core.simulators.unreal.editor import UnrealEditor
 from stable_baselines3 import PPO
+
+from gym_env import UnrealScholaGymEnv
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,37 +32,21 @@ def main() -> int:
     if not args.checkpoint.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
 
-    model = PPO.load(args.checkpoint)
-
-    protocol = gRPCProtocol(url=args.host, port=args.port, environment_start_timeout=45)
-    simulator = UnrealEditor()
-
-    protocol.start()
-    simulator.start(protocol.properties)
-    protocol.send_startup_msg(auto_reset_type=AutoresetMode.DISABLED)
+    env = UnrealScholaGymEnv(host=args.host, port=args.port, timeout_seconds=45)
 
     try:
-        ids, _, observation_spaces, action_spaces = protocol.get_definition()
-        if not ids or not ids[0]:
-            raise RuntimeError("No Schola environments or agents were discovered in the running editor.")
+        model = PPO.load(args.checkpoint, env=env)
 
-        env_id = 0
-        agent_id = ids[env_id][0]
-        action_space = action_spaces[env_id][agent_id]
-        observation_space = observation_spaces[env_id][agent_id]
-
-        print(f"Connected to env {env_id}, agent {agent_id}")
-        print(f"Observation space: {observation_space}")
-        print(f"Action space: {action_space}")
+        print(f"Connected to env 0, agent {env.agent_id}")
+        print(f"Observation space: {env.observation_space}")
+        print(f"Action space: {env.action_space}")
 
         successes = 0
         total_reward = 0.0
         total_steps = 0
 
         for episode_index in range(1, args.episodes + 1):
-            observations, infos = protocol.send_reset_msg(seeds=[args.seed + episode_index - 1], options=[{}])
-            observation = observations[env_id][agent_id]
-            reset_info = infos[env_id][agent_id]
+            observation, reset_info = env.reset(seed=args.seed + episode_index - 1)
             if args.verbose:
                 print(f"episode={episode_index} reset obs={_format_value(observation)} info={reset_info}")
 
@@ -73,16 +55,7 @@ def main() -> int:
 
             while True:
                 action, _ = model.predict(observation, deterministic=args.deterministic)
-                observations, rewards, terminateds, truncateds, infos, _, _ = protocol.send_action_msg(
-                    {env_id: {agent_id: action}},
-                    {agent_id: action_space},
-                )
-
-                observation = observations[env_id][agent_id]
-                reward = float(rewards[env_id][agent_id])
-                terminated = bool(terminateds[env_id][agent_id])
-                truncated = bool(truncateds[env_id][agent_id])
-                info = infos[env_id][agent_id]
+                observation, reward, terminated, truncated, info = env.step(action)
 
                 episode_reward += reward
                 episode_length += 1
@@ -121,11 +94,10 @@ def main() -> int:
         )
         return 0
     finally:
-        protocol.close()
-        simulator.stop()
+        env.close()
 
 
-def _format_value(value: Any) -> str:
+def _format_value(value: object) -> str:
     if hasattr(value, "tolist"):
         return str(value.tolist())
     return str(value)

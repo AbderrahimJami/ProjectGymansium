@@ -3,10 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from schola.core.protocols.protobuf.gRPC import gRPCProtocol
-from schola.core.simulators.unreal.editor import UnrealEditor
-from schola.sb3.env import VecEnv
 from stable_baselines3 import PPO
+
+from gym_env import UnrealScholaGymEnv
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,9 +26,7 @@ def main() -> int:
     args = parse_args()
     args.checkpoint.parent.mkdir(parents=True, exist_ok=True)
 
-    protocol = gRPCProtocol(url=args.host, port=args.port, environment_start_timeout=45)
-    simulator = UnrealEditor()
-    env = VecEnv(simulator=simulator, protocol=protocol)
+    env = UnrealScholaGymEnv(host=args.host, port=args.port, timeout_seconds=45)
 
     try:
         model = PPO(

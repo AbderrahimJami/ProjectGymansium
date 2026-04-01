@@ -30,6 +30,10 @@ And a 2-float continuous action:
 - throttle in `[-1, 1]`
 - turn in `[-1, 1]`
 
+On the Python side, this vertical slice now uses a direct Gymnasium wrapper in `python/scripts/gym_env.py`.
+That wrapper exposes the UE environment as a real `gymnasium.Env`, and the PPO training/evaluation
+scripts use that wrapper rather than Schola's SB3 vector environment.
+
 ## First Editor Smoke Test
 
 1. Create or open a simple test map with a floor so the pawn has something to collide against.
@@ -50,4 +54,5 @@ That should connect to the running editor, request the Schola environment defini
 
 - Schola `2.0.1` builds cleanly here against UE `5.7.4`.
 - `StructUtils` is currently listed because Schola depends on it, although Unreal marks that plugin deprecated in newer engine versions.
-- Schola's `schola.gym.env` currently imports `ray` at module import time, so the smoke test uses the lower-level protocol path instead of the Gym wrapper.
+- Schola's built-in `schola.gym.env` currently imports `ray` at module import time in this setup.
+  To avoid that dependency leak, this project uses its own thin `gymnasium.Env` wrapper over the working Schola protocol layer.
