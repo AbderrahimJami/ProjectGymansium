@@ -67,6 +67,45 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
 	float SuccessReward = 5.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Debug")
+	bool bEnableDebugDraw = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Debug")
+	bool bEnableOnScreenTelemetry = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Debug")
+	float DebugDrawDurationSeconds = 0.2f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	float LastReward = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	float CurrentEpisodeReward = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	float LastDistanceToGoal = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	float LastBearingToGoal = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	bool bLastStepCollided = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	int32 EpisodesCompleted = 0;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	int32 SuccessCount = 0;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	int32 TimeoutCount = 0;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	int32 CollisionCount = 0;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	FString LastEpisodeOutcome = TEXT("None");
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -76,7 +115,11 @@ private:
 	FTransform MakeAgentSpawnTransform();
 	FVector MakeGoalLocation(const FVector& AgentLocation);
 	float GetGoalDistance() const;
+	float GetSignedBearingToGoalDegrees() const;
 	FVector GetEnvironmentCenter() const;
+	void UpdateDebugState(float RewardDelta);
+	void UpdateDebugVisualization(bool bTerminated, bool bTruncated);
+	void FinalizeEpisode(const FString& OutcomeLabel);
 
 	UPROPERTY()
 	FRandomStream RandomStream;

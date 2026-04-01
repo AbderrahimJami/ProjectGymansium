@@ -3,6 +3,8 @@
 #include "GymansiumNavigationEnvironment.h"
 
 #include "Components/SceneComponent.h"
+#include "DrawDebugHelpers.h"
+#include "Engine/Engine.h"
 #include "Points/BoxPoint.h"
 #include "Spaces/BoxSpace.h"
 #include "GymansiumGoalActor.h"
@@ -54,15 +56,23 @@ void AGymansiumNavigationEnvironment::Reset_Implementation(FInitialAgentState& O
 	}
 
 	CurrentStep = 0;
+	CurrentEpisodeReward = 0.0f;
+	LastReward = 0.0f;
+	bLastStepCollided = false;
+	LastEpisodeOutcome = TEXT("Running");
 
 	const FTransform AgentTransform = MakeAgentSpawnTransform();
 	AgentPawn->ResetToTransform(AgentTransform);
 	GoalActor->SetActorLocation(MakeGoalLocation(AgentTransform.GetLocation()));
 
 	PreviousDistanceToGoal = GetGoalDistance();
+	LastDistanceToGoal = PreviousDistanceToGoal;
+	LastBearingToGoal = GetSignedBearingToGoalDegrees();
 
 	BuildObservation(OutAgentState.Observations);
 	OutAgentState.Info.Add(TEXT("status"), TEXT("reset"));
+	OutAgentState.Info.Add(TEXT("episode_reward"), FString::SanitizeFloat(CurrentEpisodeReward));
+	UpdateDebugVisualization(false, false);
 }
 
 void AGymansiumNavigationEnvironment::Step_Implementation(const FInstancedStruct& InAction, FAgentState& OutAgentState)
@@ -120,6 +130,18 @@ void AGymansiumNavigationEnvironment::Step_Implementation(const FInstancedStruct
 	BuildObservation(OutAgentState.Observations);
 	OutAgentState.Info.Add(TEXT("step"), FString::FromInt(CurrentStep));
 	OutAgentState.Info.Add(TEXT("distance"), FString::SanitizeFloat(CurrentDistance));
+	OutAgentState.Info.Add(TEXT("episode_reward"), FString::SanitizeFloat(CurrentEpisodeReward + OutAgentState.Reward));
+
+	UpdateDebugState(OutAgentState.Reward);
+	if (OutAgentState.bTerminated)
+	{
+		FinalizeEpisode(TEXT("Success"));
+	}
+	else if (OutAgentState.bTruncated)
+	{
+		FinalizeEpisode(TEXT("Timeout"));
+	}
+	UpdateDebugVisualization(OutAgentState.bTerminated, OutAgentState.bTruncated);
 
 	PreviousDistanceToGoal = CurrentDistance;
 }
@@ -242,7 +264,103 @@ float AGymansiumNavigationEnvironment::GetGoalDistance() const
 	return FVector::Dist2D(AgentPawn->GetActorLocation(), GoalActor->GetActorLocation());
 }
 
+float AGymansiumNavigationEnvironment::GetSignedBearingToGoalDegrees() const
+{
+	if (!IsValid(AgentPawn) || !IsValid(GoalActor))
+	{
+		return 0.0f;
+	}
+
+	const FVector ToGoal = GoalActor->GetActorLocation() - AgentPawn->GetActorLocation();
+	const float GoalYaw = ToGoal.Rotation().Yaw;
+	const float PawnYaw = AgentPawn->GetActorRotation().Yaw;
+	return FMath::FindDeltaAngleDegrees(PawnYaw, GoalYaw);
+}
+
 FVector AGymansiumNavigationEnvironment::GetEnvironmentCenter() const
 {
 	return GetActorLocation();
+}
+
+void AGymansiumNavigationEnvironment::UpdateDebugState(float RewardDelta)
+{
+	LastReward = RewardDelta;
+	CurrentEpisodeReward += RewardDelta;
+	LastDistanceToGoal = GetGoalDistance();
+	LastBearingToGoal = GetSignedBearingToGoalDegrees();
+	bLastStepCollided = IsValid(AgentPawn) && AgentPawn->WasLastMoveBlocked();
+	if (bLastStepCollided)
+	{
+		++CollisionCount;
+	}
+}
+
+void AGymansiumNavigationEnvironment::UpdateDebugVisualization(bool bTerminated, bool bTruncated)
+{
+	UWorld* World = GetWorld();
+	if (!World || !IsValid(AgentPawn) || !IsValid(GoalActor))
+	{
+		return;
+	}
+
+	const FVector PawnLocation = AgentPawn->GetActorLocation();
+	const FVector GoalLocation = GoalActor->GetActorLocation();
+	const float DrawDuration = FMath::Max(DebugDrawDurationSeconds, 0.0f);
+
+	if (bEnableDebugDraw)
+	{
+		const FColor GoalColor = bTerminated ? FColor::Green : (bTruncated ? FColor::Red : FColor::Yellow);
+		const FColor PathColor = bLastStepCollided ? FColor::Red : FColor::Cyan;
+		const FVector ArrowEnd = PawnLocation + (AgentPawn->GetActorForwardVector() * 150.0f);
+
+		DrawDebugSphere(World, GoalLocation, GoalRadius, 24, GoalColor, false, DrawDuration, 0, 2.0f);
+		DrawDebugLine(World, PawnLocation, GoalLocation, PathColor, false, DrawDuration, 0, 2.0f);
+		DrawDebugDirectionalArrow(World, PawnLocation, ArrowEnd, 60.0f, FColor::Blue, false, DrawDuration, 0, 2.0f);
+	}
+
+	if (bEnableOnScreenTelemetry && GEngine)
+	{
+		const FString Telemetry = FString::Printf(
+			TEXT("GymNav | Step %d/%d | Dist %.1f | Bearing %.1f | Reward %.3f | EpReward %.3f | Collided %s | Success %d | Timeout %d | Outcome %s"),
+			CurrentStep,
+			MaxEpisodeSteps,
+			LastDistanceToGoal,
+			LastBearingToGoal,
+			LastReward,
+			CurrentEpisodeReward,
+			bLastStepCollided ? TEXT("Yes") : TEXT("No"),
+			SuccessCount,
+			TimeoutCount,
+			*LastEpisodeOutcome
+		);
+
+		GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), DrawDuration + 0.05f, FColor::White, Telemetry);
+	}
+}
+
+void AGymansiumNavigationEnvironment::FinalizeEpisode(const FString& OutcomeLabel)
+{
+	++EpisodesCompleted;
+	LastEpisodeOutcome = OutcomeLabel;
+
+	if (OutcomeLabel == TEXT("Success"))
+	{
+		++SuccessCount;
+	}
+	else if (OutcomeLabel == TEXT("Timeout"))
+	{
+		++TimeoutCount;
+	}
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("GymNav episode %d ended: %s | steps=%d reward=%.3f distance=%.3f collisions=%d"),
+		EpisodesCompleted,
+		*OutcomeLabel,
+		CurrentStep,
+		CurrentEpisodeReward,
+		LastDistanceToGoal,
+		CollisionCount
+	);
 }
