@@ -42,11 +42,14 @@ void AGymansiumNavPawn::ApplyAction(float ThrottleInput, float TurnInput, float 
 	const float ClampedStepSeconds = FMath::Max(StepSeconds, KINDA_SMALL_NUMBER);
 	const float ClampedThrottle = FMath::Clamp(ThrottleInput, -1.0f, 1.0f);
 	const float ClampedTurn = FMath::Clamp(TurnInput, -1.0f, 1.0f);
+	const float EffectiveThrottle = (ClampedThrottle >= 0.0f)
+		? ClampedThrottle
+		: (ClampedThrottle * FMath::Clamp(ReverseSpeedMultiplier, 0.0f, 1.0f));
 
 	AddActorLocalRotation(FRotator(0.0f, ClampedTurn * TurnSpeedDegrees * ClampedStepSeconds, 0.0f));
 
 	const FVector StartLocation = GetActorLocation();
-	const FVector Delta = GetActorForwardVector() * (ClampedThrottle * MoveSpeed * ClampedStepSeconds);
+	const FVector Delta = GetActorForwardVector() * (EffectiveThrottle * MoveSpeed * ClampedStepSeconds);
 
 	FHitResult HitResult;
 	AddActorWorldOffset(Delta, true, &HitResult);

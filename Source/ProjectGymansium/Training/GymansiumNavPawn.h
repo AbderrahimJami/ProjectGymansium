@@ -45,6 +45,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
 	float TurnSpeedDegrees = 120.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	float ReverseSpeedMultiplier = 0.5f;
+
 private:
 	UPROPERTY()
 	FVector LastVelocity = FVector::ZeroVector;

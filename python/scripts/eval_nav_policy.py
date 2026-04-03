@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from collections import Counter
 from pathlib import Path
 
 from stable_baselines3 import PPO
@@ -16,8 +17,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        default=Path("python/checkpoints/nav_ppo.zip"),
-        help="Path to the PPO checkpoint.",
+        default=None,
+        help="Optional exact path to the PPO checkpoint. If omitted, the newest matching checkpoint is used.",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=Path("python/checkpoints"),
+        help="Directory to search when --checkpoint is not provided.",
     )
     parser.add_argument("--episodes", type=int, default=5, help="Number of episodes to run.")
     parser.add_argument("--deterministic", action="store_true", help="Use deterministic policy actions.")
@@ -27,21 +34,33 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_checkpoint_path(args: argparse.Namespace) -> Path:
+    if args.checkpoint is not None:
+        return args.checkpoint
+
+    candidates = sorted(args.checkpoint_dir.glob("nav_ppo_seed*.zip"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not candidates:
+        raise FileNotFoundError(f"No checkpoints found in {args.checkpoint_dir}")
+    return candidates[0]
+
+
 def main() -> int:
     args = parse_args()
-    if not args.checkpoint.is_file():
-        raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
+    checkpoint_path = resolve_checkpoint_path(args)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     env = UnrealScholaGymEnv(host=args.host, port=args.port, timeout_seconds=45)
 
     try:
-        model = PPO.load(args.checkpoint, env=env)
+        model = PPO.load(checkpoint_path, env=env)
 
         print(f"Connected to env 0, agent {env.agent_id}")
         print(f"Observation space: {env.observation_space}")
         print(f"Action space: {env.action_space}")
+        print(f"Evaluating checkpoint={checkpoint_path} with base_seed={args.seed}")
 
-        successes = 0
+        outcome_counts: Counter[str] = Counter()
         total_reward = 0.0
         total_steps = 0
 
@@ -72,12 +91,11 @@ def main() -> int:
                 if not (terminated or truncated):
                     continue
 
-                success = terminated and not truncated
-                successes += int(success)
+                outcome = info.get("outcome") or ("Success" if terminated else "Timeout")
+                outcome_counts[outcome] += 1
                 total_reward += episode_reward
                 total_steps += episode_length
 
-                outcome = "success" if success else "timeout"
                 distance = info.get("distance", "n/a")
                 print(
                     f"episode={episode_index} outcome={outcome} "
@@ -87,10 +105,12 @@ def main() -> int:
 
         average_reward = total_reward / max(args.episodes, 1)
         average_steps = total_steps / max(args.episodes, 1)
+        successes = outcome_counts.get("Success", 0)
         success_rate = successes / max(args.episodes, 1)
+        outcome_summary = ", ".join(f"{name}={count}" for name, count in sorted(outcome_counts.items())) or "none"
         print(
-            f"summary successes={successes}/{args.episodes} "
-            f"success_rate={success_rate:.2%} avg_reward={average_reward:.3f} avg_steps={average_steps:.1f}"
+            f"summary successes={successes}/{args.episodes} success_rate={success_rate:.2%} "
+            f"avg_reward={average_reward:.3f} avg_steps={average_steps:.1f} outcomes=[{outcome_summary}]"
         )
         return 0
     finally:

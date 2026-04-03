@@ -59,6 +59,8 @@ void AGymansiumNavigationEnvironment::Reset_Implementation(FInitialAgentState& O
 	CurrentEpisodeReward = 0.0f;
 	LastReward = 0.0f;
 	bLastStepCollided = false;
+	EpisodeCollisionCount = 0;
+	NearGoalOrbitSteps = 0;
 	LastEpisodeOutcome = TEXT("Running");
 
 	const FTransform AgentTransform = MakeAgentSpawnTransform();
@@ -68,10 +70,15 @@ void AGymansiumNavigationEnvironment::Reset_Implementation(FInitialAgentState& O
 	PreviousDistanceToGoal = GetGoalDistance();
 	LastDistanceToGoal = PreviousDistanceToGoal;
 	LastBearingToGoal = GetSignedBearingToGoalDegrees();
+	PreviousAbsoluteBearingToGoal = FMath::Abs(LastBearingToGoal);
+	bLastFacingGoal = FMath::Abs(LastBearingToGoal) <= SuccessFacingAngleDegrees;
 
 	BuildObservation(OutAgentState.Observations);
 	OutAgentState.Info.Add(TEXT("status"), TEXT("reset"));
 	OutAgentState.Info.Add(TEXT("episode_reward"), FString::SanitizeFloat(CurrentEpisodeReward));
+	OutAgentState.Info.Add(TEXT("bearing_degrees"), FString::SanitizeFloat(LastBearingToGoal));
+	OutAgentState.Info.Add(TEXT("facing_goal"), bLastFacingGoal ? TEXT("true") : TEXT("false"));
+	OutAgentState.Info.Add(TEXT("outcome"), LastEpisodeOutcome);
 	UpdateDebugVisualization(false, false);
 }
 
@@ -108,21 +115,56 @@ void AGymansiumNavigationEnvironment::Step_Implementation(const FInstancedStruct
 
 	const float CurrentDistance = GetGoalDistance();
 	const float Progress = PreviousDistanceToGoal - CurrentDistance;
+	const float CurrentBearing = GetSignedBearingToGoalDegrees();
+	const float CurrentAbsoluteBearing = FMath::Abs(CurrentBearing);
+	const float BearingImprovement = PreviousAbsoluteBearingToGoal - CurrentAbsoluteBearing;
+	const bool bFacingGoal = CurrentAbsoluteBearing <= SuccessFacingAngleDegrees;
+	const bool bNearGoal = CurrentDistance <= (GoalRadius * FMath::Max(NearGoalDistanceMultiplier, 1.0f));
+	const bool bOrbitingNearGoal = bNearGoal
+		&& !bFacingGoal
+		&& Progress <= NearGoalProgressThreshold
+		&& FMath::Abs(Turn) >= 0.35f;
 
 	OutAgentState.Reward = (Progress * ProgressRewardScale) - TimePenalty;
+	OutAgentState.Reward += BearingImprovement * AlignmentRewardScale;
+
+	if (Throttle < 0.0f)
+	{
+		OutAgentState.Reward -= FMath::Abs(Throttle) * ReversePenaltyScale;
+	}
 
 	if (AgentPawn->WasLastMoveBlocked())
 	{
 		OutAgentState.Reward -= CollisionPenalty;
 	}
 
-	if (CurrentDistance <= GoalRadius)
+	if (bOrbitingNearGoal)
+	{
+		++NearGoalOrbitSteps;
+		OutAgentState.Reward -= FMath::Abs(Turn) * NearGoalTurnPenaltyScale;
+	}
+	else if (bNearGoal && !bFacingGoal && Progress > NearGoalProgressThreshold)
+	{
+		NearGoalOrbitSteps = FMath::Max(NearGoalOrbitSteps - 1, 0);
+	}
+	else if (!bNearGoal)
+	{
+		NearGoalOrbitSteps = 0;
+	}
+
+	if (CurrentDistance <= GoalRadius && (!bRequireFacingForSuccess || bFacingGoal))
 	{
 		OutAgentState.Reward += SuccessReward;
 		OutAgentState.bTerminated = true;
 	}
 
-	if (CurrentStep >= MaxEpisodeSteps)
+	if (!OutAgentState.bTerminated && NearGoalOrbitSteps >= NearGoalOrbitStepLimit)
+	{
+		OutAgentState.Reward -= OrbitTimeoutPenalty;
+		OutAgentState.bTruncated = true;
+	}
+
+	if (!OutAgentState.bTerminated && CurrentStep >= MaxEpisodeSteps)
 	{
 		OutAgentState.bTruncated = true;
 	}
@@ -130,20 +172,30 @@ void AGymansiumNavigationEnvironment::Step_Implementation(const FInstancedStruct
 	BuildObservation(OutAgentState.Observations);
 	OutAgentState.Info.Add(TEXT("step"), FString::FromInt(CurrentStep));
 	OutAgentState.Info.Add(TEXT("distance"), FString::SanitizeFloat(CurrentDistance));
+	OutAgentState.Info.Add(TEXT("bearing_degrees"), FString::SanitizeFloat(CurrentBearing));
+	OutAgentState.Info.Add(TEXT("facing_goal"), bFacingGoal ? TEXT("true") : TEXT("false"));
 	OutAgentState.Info.Add(TEXT("episode_reward"), FString::SanitizeFloat(CurrentEpisodeReward + OutAgentState.Reward));
 
 	UpdateDebugState(OutAgentState.Reward);
 	if (OutAgentState.bTerminated)
 	{
+		OutAgentState.Info.Add(TEXT("outcome"), TEXT("Success"));
 		FinalizeEpisode(TEXT("Success"));
 	}
 	else if (OutAgentState.bTruncated)
 	{
-		FinalizeEpisode(TEXT("Timeout"));
+		const FString OutcomeLabel = NearGoalOrbitSteps >= NearGoalOrbitStepLimit ? TEXT("OrbitTimeout") : TEXT("Timeout");
+		OutAgentState.Info.Add(TEXT("outcome"), OutcomeLabel);
+		FinalizeEpisode(OutcomeLabel);
+	}
+	else
+	{
+		OutAgentState.Info.Add(TEXT("outcome"), LastEpisodeOutcome);
 	}
 	UpdateDebugVisualization(OutAgentState.bTerminated, OutAgentState.bTruncated);
 
 	PreviousDistanceToGoal = CurrentDistance;
+	PreviousAbsoluteBearingToGoal = CurrentAbsoluteBearing;
 }
 
 void AGymansiumNavigationEnvironment::SeedEnvironment_Implementation(int Seed)
@@ -167,6 +219,51 @@ void AGymansiumNavigationEnvironment::SetEnvironmentOptions_Implementation(const
 	if (const FString* StepDurationValue = Options.Find(TEXT("step_duration_seconds")))
 	{
 		StepDurationSeconds = FCString::Atof(**StepDurationValue);
+	}
+
+	if (const FString* AlignmentRewardValue = Options.Find(TEXT("alignment_reward_scale")))
+	{
+		AlignmentRewardScale = FCString::Atof(**AlignmentRewardValue);
+	}
+
+	if (const FString* ReversePenaltyValue = Options.Find(TEXT("reverse_penalty_scale")))
+	{
+		ReversePenaltyScale = FCString::Atof(**ReversePenaltyValue);
+	}
+
+	if (const FString* FacingAngleValue = Options.Find(TEXT("success_facing_angle_degrees")))
+	{
+		SuccessFacingAngleDegrees = FCString::Atof(**FacingAngleValue);
+	}
+
+	if (const FString* RequireFacingValue = Options.Find(TEXT("require_facing_for_success")))
+	{
+		bRequireFacingForSuccess = RequireFacingValue->ToBool();
+	}
+
+	if (const FString* NearGoalDistanceMultiplierValue = Options.Find(TEXT("near_goal_distance_multiplier")))
+	{
+		NearGoalDistanceMultiplier = FCString::Atof(**NearGoalDistanceMultiplierValue);
+	}
+
+	if (const FString* NearGoalTurnPenaltyValue = Options.Find(TEXT("near_goal_turn_penalty_scale")))
+	{
+		NearGoalTurnPenaltyScale = FCString::Atof(**NearGoalTurnPenaltyValue);
+	}
+
+	if (const FString* NearGoalProgressValue = Options.Find(TEXT("near_goal_progress_threshold")))
+	{
+		NearGoalProgressThreshold = FCString::Atof(**NearGoalProgressValue);
+	}
+
+	if (const FString* OrbitStepLimitValue = Options.Find(TEXT("near_goal_orbit_step_limit")))
+	{
+		NearGoalOrbitStepLimit = FCString::Atoi(**OrbitStepLimitValue);
+	}
+
+	if (const FString* OrbitTimeoutPenaltyValue = Options.Find(TEXT("orbit_timeout_penalty")))
+	{
+		OrbitTimeoutPenalty = FCString::Atof(**OrbitTimeoutPenaltyValue);
 	}
 }
 
@@ -288,9 +385,11 @@ void AGymansiumNavigationEnvironment::UpdateDebugState(float RewardDelta)
 	CurrentEpisodeReward += RewardDelta;
 	LastDistanceToGoal = GetGoalDistance();
 	LastBearingToGoal = GetSignedBearingToGoalDegrees();
+	bLastFacingGoal = FMath::Abs(LastBearingToGoal) <= SuccessFacingAngleDegrees;
 	bLastStepCollided = IsValid(AgentPawn) && AgentPawn->WasLastMoveBlocked();
 	if (bLastStepCollided)
 	{
+		++EpisodeCollisionCount;
 		++CollisionCount;
 	}
 }
@@ -321,14 +420,17 @@ void AGymansiumNavigationEnvironment::UpdateDebugVisualization(bool bTerminated,
 	if (bEnableOnScreenTelemetry && GEngine)
 	{
 		const FString Telemetry = FString::Printf(
-			TEXT("GymNav | Step %d/%d | Dist %.1f | Bearing %.1f | Reward %.3f | EpReward %.3f | Collided %s | Success %d | Timeout %d | Outcome %s"),
+			TEXT("GymNav | Step %d/%d | Dist %.1f | Bearing %.1f | Facing %s | Reward %.3f | EpReward %.3f | Collided %s | EpColl %d | Orbit %d | Success %d | Timeout %d | Outcome %s"),
 			CurrentStep,
 			MaxEpisodeSteps,
 			LastDistanceToGoal,
 			LastBearingToGoal,
+			bLastFacingGoal ? TEXT("Yes") : TEXT("No"),
 			LastReward,
 			CurrentEpisodeReward,
 			bLastStepCollided ? TEXT("Yes") : TEXT("No"),
+			EpisodeCollisionCount,
+			NearGoalOrbitSteps,
 			SuccessCount,
 			TimeoutCount,
 			*LastEpisodeOutcome
@@ -347,7 +449,7 @@ void AGymansiumNavigationEnvironment::FinalizeEpisode(const FString& OutcomeLabe
 	{
 		++SuccessCount;
 	}
-	else if (OutcomeLabel == TEXT("Timeout"))
+	else if (OutcomeLabel == TEXT("Timeout") || OutcomeLabel == TEXT("OrbitTimeout"))
 	{
 		++TimeoutCount;
 	}
@@ -355,12 +457,13 @@ void AGymansiumNavigationEnvironment::FinalizeEpisode(const FString& OutcomeLabe
 	UE_LOG(
 		LogTemp,
 		Log,
-		TEXT("GymNav episode %d ended: %s | steps=%d reward=%.3f distance=%.3f collisions=%d"),
+		TEXT("GymNav episode %d ended: %s | steps=%d reward=%.3f distance=%.3f episode_collisions=%d orbit_steps=%d"),
 		EpisodesCompleted,
 		*OutcomeLabel,
 		CurrentStep,
 		CurrentEpisodeReward,
 		LastDistanceToGoal,
-		CollisionCount
+		EpisodeCollisionCount,
+		NearGoalOrbitSteps
 	);
 }

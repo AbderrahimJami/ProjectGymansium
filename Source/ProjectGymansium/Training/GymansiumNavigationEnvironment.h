@@ -67,6 +67,33 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
 	float SuccessReward = 5.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	float AlignmentRewardScale = 0.005f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	float ReversePenaltyScale = 0.05f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	float SuccessFacingAngleDegrees = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	bool bRequireFacingForSuccess = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	float NearGoalDistanceMultiplier = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	float NearGoalProgressThreshold = 2.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	float NearGoalTurnPenaltyScale = 0.05f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	int32 NearGoalOrbitStepLimit = 20;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	float OrbitTimeoutPenalty = 1.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Debug")
 	bool bEnableDebugDraw = true;
 
@@ -89,7 +116,16 @@ public:
 	float LastBearingToGoal = 0.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	bool bLastFacingGoal = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
 	bool bLastStepCollided = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	int32 EpisodeCollisionCount = 0;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
+	int32 NearGoalOrbitSteps = 0;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Debug")
 	int32 EpisodesCompleted = 0;
@@ -129,6 +165,9 @@ private:
 
 	UPROPERTY()
 	float PreviousDistanceToGoal = 0.0f;
+
+	UPROPERTY()
+	float PreviousAbsoluteBearingToGoal = 0.0f;
 
 	UPROPERTY()
 	int32 LastSeed = 1337;
