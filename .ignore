@@ -1,7 +1,13 @@
+/.git
 /.idea
 /.vs
 /.vscode
 /Content
 /DerivedDataCache
 /Intermediate
+/python
 /Saved
+/Plugins/Schola/Docs
+/Plugins/Schola/Intermediate
+/Plugins/Schola/Proto
+/Plugins/Schola/Test
