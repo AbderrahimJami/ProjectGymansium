@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
+import gymnasium.spaces as spaces
 from stable_baselines3 import PPO
 
 from gym_env import UnrealScholaGymEnv
@@ -47,8 +48,11 @@ def main() -> int:
 
     try:
         env.reset(seed=args.seed)
+        uses_dict_observation = isinstance(env.observation_space, spaces.Dict)
+        policy_name = "MultiInputPolicy" if uses_dict_observation else "MlpPolicy"
+        policy_kwargs = {"normalize_images": False} if uses_dict_observation else None
         model = PPO(
-            "MlpPolicy",
+            policy_name,
             env,
             verbose=1,
             n_steps=256,
@@ -56,8 +60,12 @@ def main() -> int:
             learning_rate=3e-4,
             gamma=0.99,
             seed=args.seed,
+            policy_kwargs=policy_kwargs,
         )
-        print(f"Training with seed={args.seed} for {args.timesteps} timesteps")
+        print(
+            f"Training with policy={policy_name} seed={args.seed} for {args.timesteps} timesteps "
+            f"dict_obs={uses_dict_observation}"
+        )
         model.learn(total_timesteps=args.timesteps)
         model.save(checkpoint_path)
         print(f"Saved checkpoint to {checkpoint_path}")

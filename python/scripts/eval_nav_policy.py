@@ -4,7 +4,9 @@ import argparse
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 from stable_baselines3 import PPO
 
 from gym_env import UnrealScholaGymEnv
@@ -117,9 +119,16 @@ def main() -> int:
         env.close()
 
 
-def _format_value(value: object) -> str:
+def _format_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{key}: {_format_value(subvalue)}" for key, subvalue in value.items()) + "}"
+    if isinstance(value, np.ndarray):
+        if value.size <= 12:
+            return str(value.tolist())
+        return f"ndarray(shape={value.shape}, dtype={value.dtype}, min={value.min():.3f}, max={value.max():.3f})"
     if hasattr(value, "tolist"):
-        return str(value.tolist())
+        as_list = value.tolist()
+        return str(as_list[:12]) if isinstance(as_list, list) and len(as_list) > 12 else str(as_list)
     return str(value)
 
 
