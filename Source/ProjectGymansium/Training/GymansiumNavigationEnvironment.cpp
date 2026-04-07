@@ -6,9 +6,7 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/Engine.h"
 #include "Points/BoxPoint.h"
-#include "Points/DictPoint.h"
 #include "Spaces/BoxSpace.h"
-#include "Spaces/DictSpace.h"
 #include "GymansiumGoalActor.h"
 #include "GymansiumNavPawn.h"
 
@@ -33,24 +31,16 @@ void AGymansiumNavigationEnvironment::BeginPlay()
 
 void AGymansiumNavigationEnvironment::InitializeEnvironment_Implementation(FInteractionDefinition& OutAgentDefinition)
 {
-	OutAgentDefinition.ObsSpaceDefn.InitializeAs<FDictSpace>();
-	FDictSpace& ObservationSpace = OutAgentDefinition.ObsSpaceDefn.GetMutable<FDictSpace>();
-
-	TInstancedStruct<FSpace> ImageObservationSpace;
-	ImageObservationSpace.InitializeAs<FBoxSpace>();
-	FBoxSpace& ImageBoxSpace = ImageObservationSpace.GetMutable<FBoxSpace>();
-	ImageBoxSpace.Dimensions.Init(FBoxSpaceDimension(0.0f, 1.0f), VisionObservationWidth * VisionObservationHeight * 3);
-	ImageBoxSpace.Shape = { 3, VisionObservationHeight, VisionObservationWidth };
-	ObservationSpace.Spaces.Add(TEXT("image"), ImageObservationSpace);
-
-	TInstancedStruct<FSpace> StateObservationSpace;
-	StateObservationSpace.InitializeAs<FBoxSpace>();
-	FBoxSpace& StateBoxSpace = StateObservationSpace.GetMutable<FBoxSpace>();
-	StateBoxSpace.Add(0.0f, 1.0f);   // normalized distance to goal
-	StateBoxSpace.Add(-1.0f, 1.0f);  // signed bearing to goal
-	StateBoxSpace.Add(0.0f, 1.0f);   // normalized speed
-	StateBoxSpace.Add(0.0f, 1.0f);   // collision flag
-	ObservationSpace.Spaces.Add(TEXT("state"), StateObservationSpace);
+	OutAgentDefinition.ObsSpaceDefn.InitializeAs<FBoxSpace>();
+	FBoxSpace& ObservationSpace = OutAgentDefinition.ObsSpaceDefn.GetMutable<FBoxSpace>();
+	ObservationSpace.Add(0.0f, 1.0f);   // normalized distance to goal
+	ObservationSpace.Add(-1.0f, 1.0f);  // signed bearing to goal
+	ObservationSpace.Add(0.0f, 1.0f);   // normalized speed
+	ObservationSpace.Add(0.0f, 1.0f);   // collision flag
+	for (int32 i = 0; i < NumRaycastSensors; ++i)
+	{
+		ObservationSpace.Add(0.0f, 1.0f); // raycast sensor i: normalized distance to nearest obstacle
+	}
 
 	OutAgentDefinition.ActionSpaceDefn.InitializeAs<FBoxSpace>();
 	FBoxSpace& ActionSpace = OutAgentDefinition.ActionSpaceDefn.GetMutable<FBoxSpace>();
@@ -235,14 +225,14 @@ void AGymansiumNavigationEnvironment::SetEnvironmentOptions_Implementation(const
 		StepDurationSeconds = FCString::Atof(**StepDurationValue);
 	}
 
-	if (const FString* VisionWidthValue = Options.Find(TEXT("vision_observation_width")))
+	if (const FString* NumRaysValue = Options.Find(TEXT("num_raycast_sensors")))
 	{
-		VisionObservationWidth = FMath::Max(FCString::Atoi(**VisionWidthValue), 1);
+		NumRaycastSensors = FMath::Max(FCString::Atoi(**NumRaysValue), 0);
 	}
 
-	if (const FString* VisionHeightValue = Options.Find(TEXT("vision_observation_height")))
+	if (const FString* RayRangeValue = Options.Find(TEXT("raycast_max_range")))
 	{
-		VisionObservationHeight = FMath::Max(FCString::Atoi(**VisionHeightValue), 1);
+		RaycastMaxRange = FMath::Max(FCString::Atof(**RayRangeValue), 1.0f);
 	}
 
 	if (const FString* AlignmentRewardValue = Options.Find(TEXT("alignment_reward_scale")))
@@ -290,10 +280,6 @@ void AGymansiumNavigationEnvironment::SetEnvironmentOptions_Implementation(const
 		OrbitTimeoutPenalty = FCString::Atof(**OrbitTimeoutPenaltyValue);
 	}
 
-	if (IsValid(AgentPawn))
-	{
-		AgentPawn->ConfigureVisionCapture(VisionObservationWidth, VisionObservationHeight);
-	}
 }
 
 void AGymansiumNavigationEnvironment::EnsureActors()
@@ -312,11 +298,6 @@ void AGymansiumNavigationEnvironment::EnsureActors()
 		AgentPawn = World->SpawnActor<AGymansiumNavPawn>(AgentPawnClass, MakeAgentSpawnTransform(), SpawnParameters);
 	}
 
-	if (IsValid(AgentPawn))
-	{
-		AgentPawn->ConfigureVisionCapture(VisionObservationWidth, VisionObservationHeight);
-	}
-
 	if (!IsValid(GoalActor) && GoalActorClass)
 	{
 		FActorSpawnParameters SpawnParameters;
@@ -328,18 +309,8 @@ void AGymansiumNavigationEnvironment::EnsureActors()
 
 void AGymansiumNavigationEnvironment::BuildObservation(TInstancedStruct<FPoint>& OutObservation)
 {
-	OutObservation.InitializeAs<FDictPoint>();
-	FDictPoint& Observation = OutObservation.GetMutable<FDictPoint>();
-
-	TInstancedStruct<FPoint> ImageObservation;
-	ImageObservation.InitializeAs<FBoxPoint>();
-	BuildImageObservation(ImageObservation.GetMutable<FBoxPoint>());
-	Observation.Points.Add(TEXT("image"), MoveTemp(ImageObservation));
-
-	TInstancedStruct<FPoint> StateObservation;
-	StateObservation.InitializeAs<FBoxPoint>();
-	BuildStateObservation(StateObservation.GetMutable<FBoxPoint>());
-	Observation.Points.Add(TEXT("state"), MoveTemp(StateObservation));
+	OutObservation.InitializeAs<FBoxPoint>();
+	BuildStateObservation(OutObservation.GetMutable<FBoxPoint>());
 }
 
 void AGymansiumNavigationEnvironment::BuildStateObservation(FBoxPoint& OutStateObservation) const
@@ -364,35 +335,21 @@ void AGymansiumNavigationEnvironment::BuildStateObservation(FBoxPoint& OutStateO
 		CollisionFlag = AgentPawn->WasLastMoveBlocked() ? 1.0f : 0.0f;
 	}
 
-	OutStateObservation.Shape = { 4 };
+	TArray<float> RayDistances;
+	if (IsValid(AgentPawn) && NumRaycastSensors > 0)
+	{
+		AgentPawn->GetRaycastDistances(NumRaycastSensors, RaycastMaxRange, RayDistances);
+	}
+	else
+	{
+		RayDistances.Init(1.0f, NumRaycastSensors);
+	}
+
+	OutStateObservation.Shape = { 4 + NumRaycastSensors };
 	OutStateObservation.Values = { NormalizedDistance, NormalizedBearing, NormalizedSpeed, CollisionFlag };
+	OutStateObservation.Values.Append(RayDistances);
 }
 
-void AGymansiumNavigationEnvironment::BuildImageObservation(FBoxPoint& OutImageObservation)
-{
-	const int32 Width = FMath::Max(VisionObservationWidth, 1);
-	const int32 Height = FMath::Max(VisionObservationHeight, 1);
-	OutImageObservation.Shape = { 3, Height, Width };
-	OutImageObservation.Values.Init(0.0f, Width * Height * 3);
-
-	if (!IsValid(AgentPawn))
-	{
-		return;
-	}
-
-	TArray<int> ImageShape;
-	if (!AgentPawn->CaptureVisionObservation(OutImageObservation.Values, ImageShape))
-	{
-		OutImageObservation.Values.Init(0.0f, Width * Height * 3);
-		OutImageObservation.Shape = { 3, Height, Width };
-		return;
-	}
-
-	if (ImageShape.Num() == 3)
-	{
-		OutImageObservation.Shape = ImageShape;
-	}
-}
 
 FTransform AGymansiumNavigationEnvironment::MakeAgentSpawnTransform()
 {

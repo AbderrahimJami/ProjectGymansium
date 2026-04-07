@@ -132,6 +132,36 @@ bool AGymansiumNavPawn::CaptureVisionObservation(TArray<float>& OutImageValues, 
 	return true;
 }
 
+void AGymansiumNavPawn::GetRaycastDistances(int32 NumRays, float MaxRange, TArray<float>& OutDistances) const
+{
+	OutDistances.SetNum(NumRays);
+
+	UWorld* World = GetWorld();
+	if (!World || NumRays <= 0 || MaxRange <= 0.0f)
+	{
+		for (float& D : OutDistances) { D = 1.0f; }
+		return;
+	}
+
+	const FVector Origin = GetActorLocation();
+	const float PawnYaw = GetActorRotation().Yaw;
+	const float AngleStep = 360.0f / static_cast<float>(NumRays);
+
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredActor(this);
+
+	for (int32 i = 0; i < NumRays; ++i)
+	{
+		const float RayYaw = PawnYaw + (i * AngleStep);
+		const FVector Direction = FRotator(0.0f, RayYaw, 0.0f).Vector();
+		const FVector End = Origin + Direction * MaxRange;
+
+		FHitResult HitResult;
+		const bool bHit = World->LineTraceSingleByChannel(HitResult, Origin, End, ECC_WorldStatic, QueryParams);
+		OutDistances[i] = bHit ? FMath::Clamp(HitResult.Distance / MaxRange, 0.0f, 1.0f) : 1.0f;
+	}
+}
+
 void AGymansiumNavPawn::EnsureVisionRenderTarget()
 {
 	if (!VisionRenderTarget)

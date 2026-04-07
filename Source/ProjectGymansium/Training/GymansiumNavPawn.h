@@ -38,6 +38,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gymansium|Vision")
 	bool CaptureVisionObservation(TArray<float>& OutImageValues, TArray<int>& OutShape);
 
+	UFUNCTION(BlueprintCallable, Category = "Gymansium|Navigation")
+	void GetRaycastDistances(int32 NumRays, float MaxRange, TArray<float>& OutDistances) const;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Navigation")
 	TObjectPtr<UCapsuleComponent> CapsuleComponent;
 
