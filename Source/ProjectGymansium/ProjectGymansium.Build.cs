@@ -8,7 +8,7 @@ public class ProjectGymansium : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "StructUtils", "Schola", "ScholaTraining", "ScholaProtobuf" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "StructUtils", "Schola", "ScholaTraining", "ScholaProtobuf", "NNE" });
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 
