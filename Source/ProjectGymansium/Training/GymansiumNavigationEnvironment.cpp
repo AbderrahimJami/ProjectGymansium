@@ -425,6 +425,48 @@ void AGymansiumNavigationEnvironment::UpdateDebugState(float RewardDelta)
 	}
 }
 
+void AGymansiumNavigationEnvironment::DrawRaycastDebug() const
+{
+	UWorld* World = GetWorld();
+	if (!World || !IsValid(AgentPawn) || NumRaycastSensors <= 0)
+	{
+		return;
+	}
+
+	const FVector Origin = AgentPawn->GetActorLocation();
+	const float PawnYaw = AgentPawn->GetActorRotation().Yaw;
+	const float AngleStep = 360.0f / static_cast<float>(NumRaycastSensors);
+	const float DrawDuration = FMath::Max(DebugDrawDurationSeconds, 0.0f);
+
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredActor(AgentPawn);
+
+	for (int32 i = 0; i < NumRaycastSensors; ++i)
+	{
+		const float RayYaw = PawnYaw + (i * AngleStep);
+		const FVector Direction = FRotator(0.0f, RayYaw, 0.0f).Vector();
+		const FVector End = Origin + Direction * RaycastMaxRange;
+
+		FHitResult HitResult;
+		const bool bHit = World->LineTraceSingleByChannel(HitResult, Origin, End, ECC_WorldStatic, QueryParams);
+
+		if (bHit)
+		{
+			// Color by proximity: red when close, yellow at mid-range
+			const float NormalizedDist = FMath::Clamp(HitResult.Distance / RaycastMaxRange, 0.0f, 1.0f);
+			const FColor RayColor = FColor::MakeRedToGreenColorFromScalar(NormalizedDist);
+
+			DrawDebugLine(World, Origin, HitResult.ImpactPoint, RayColor, false, DrawDuration, 0, 1.5f);
+			DrawDebugPoint(World, HitResult.ImpactPoint, 8.0f, RayColor, false, DrawDuration);
+		}
+		else
+		{
+			// No obstacle in range — draw a dim line to show the sensor is active
+			DrawDebugLine(World, Origin, End, FColor(0, 80, 0), false, DrawDuration, 0, 0.5f);
+		}
+	}
+}
+
 void AGymansiumNavigationEnvironment::UpdateDebugVisualization(bool bTerminated, bool bTruncated)
 {
 	UWorld* World = GetWorld();
@@ -446,6 +488,11 @@ void AGymansiumNavigationEnvironment::UpdateDebugVisualization(bool bTerminated,
 		DrawDebugSphere(World, GoalLocation, GoalRadius, 24, GoalColor, false, DrawDuration, 0, 2.0f);
 		DrawDebugLine(World, PawnLocation, GoalLocation, PathColor, false, DrawDuration, 0, 2.0f);
 		DrawDebugDirectionalArrow(World, PawnLocation, ArrowEnd, 60.0f, FColor::Blue, false, DrawDuration, 0, 2.0f);
+
+		if (bEnableRaycastDebugDraw)
+		{
+			DrawRaycastDebug();
+		}
 	}
 
 	if (bEnableOnScreenTelemetry && GEngine)

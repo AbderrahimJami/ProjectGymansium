@@ -105,6 +105,9 @@ public:
 	bool bEnableDebugDraw = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Debug")
+	bool bEnableRaycastDebugDraw = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Debug")
 	bool bEnableOnScreenTelemetry = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Debug")
@@ -156,6 +159,7 @@ private:
 	void EnsureActors();
 	void BuildObservation(TInstancedStruct<FPoint>& OutObservation);
 	void BuildStateObservation(FBoxPoint& OutStateObservation) const;
+	void DrawRaycastDebug() const;
 	FTransform MakeAgentSpawnTransform();
 	FVector MakeGoalLocation(const FVector& AgentLocation);
 	float GetGoalDistance() const;
