@@ -69,6 +69,11 @@ void AGymansiumNavigationEnvironment::Reset_Implementation(FInitialAgentState& O
 		return;
 	}
 
+	if (bEnableCurriculum && CurriculumOutcomeWindow.IsEmpty())
+	{
+		SpawnRadius = CurriculumInitialSpawnRadius;
+	}
+
 	CurrentStep = 0;
 	CurrentEpisodeReward = 0.0f;
 	LastReward = 0.0f;
@@ -493,7 +498,7 @@ void AGymansiumNavigationEnvironment::UpdateDebugVisualization(bool bTerminated,
 
 	if (bEnableOnScreenTelemetry && GEngine)
 	{
-		const FString Telemetry = FString::Printf(
+		FString Telemetry = FString::Printf(
 			TEXT("GymNav | Step %d/%d | Dist %.1f | Bearing %.1f | Facing %s | Reward %.3f | EpReward %.3f | Collided %s | EpColl %d | Orbit %d | Success %d | Timeout %d | Outcome %s"),
 			CurrentStep,
 			MaxEpisodeSteps,
@@ -509,6 +514,15 @@ void AGymansiumNavigationEnvironment::UpdateDebugVisualization(bool bTerminated,
 			TimeoutCount,
 			*LastEpisodeOutcome
 		);
+		if (bEnableCurriculum)
+		{
+			Telemetry += FString::Printf(
+				TEXT(" | Curriculum: diff=%.2f spawn=%.0f rate=%.0f%%"),
+				CurrentDifficulty,
+				SpawnRadius,
+				RollingSuccessRate * 100.0f
+			);
+		}
 
 		GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), DrawDuration + 0.05f, FColor::White, Telemetry);
 	}
@@ -539,5 +553,47 @@ void AGymansiumNavigationEnvironment::FinalizeEpisode(const FString& OutcomeLabe
 		LastDistanceToGoal,
 		EpisodeCollisionCount,
 		NearGoalOrbitSteps
+	);
+
+	if (bEnableCurriculum)
+	{
+		UpdateCurriculum(OutcomeLabel == TEXT("Success"));
+	}
+}
+
+void AGymansiumNavigationEnvironment::UpdateCurriculum(bool bSuccess)
+{
+	CurriculumOutcomeWindow.Add(bSuccess);
+	if (CurriculumOutcomeWindow.Num() > FMath::Max(CurriculumWindowSize, 1))
+	{
+		CurriculumOutcomeWindow.RemoveAt(0);
+	}
+
+	int32 Successes = 0;
+	for (const bool bOutcome : CurriculumOutcomeWindow)
+	{
+		if (bOutcome) { ++Successes; }
+	}
+	RollingSuccessRate = static_cast<float>(Successes) / static_cast<float>(CurriculumOutcomeWindow.Num());
+
+	if (RollingSuccessRate >= CurriculumAdvanceThreshold)
+	{
+		CurrentDifficulty = FMath::Min(CurrentDifficulty + CurriculumStepSize, 1.0f);
+	}
+	else if (RollingSuccessRate < CurriculumRetreatThreshold)
+	{
+		CurrentDifficulty = FMath::Max(CurrentDifficulty - CurriculumStepSize, 0.0f);
+	}
+
+	SpawnRadius = FMath::Lerp(CurriculumInitialSpawnRadius, CurriculumTargetSpawnRadius, CurrentDifficulty);
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("GymNav curriculum: difficulty=%.2f spawn_radius=%.0f success_rate=%.2f (window=%d)"),
+		CurrentDifficulty,
+		SpawnRadius,
+		RollingSuccessRate,
+		CurriculumOutcomeWindow.Num()
 	);
 }

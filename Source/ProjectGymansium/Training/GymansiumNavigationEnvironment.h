@@ -101,6 +101,39 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Vision")
 	int32 VisionObservationHeight = 84;
 
+	// Curriculum: gradually increase task difficulty based on rolling success rate.
+	// When enabled, SpawnRadius is overridden and managed automatically.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Curriculum")
+	bool bEnableCurriculum = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Curriculum", meta = (EditCondition = "bEnableCurriculum"))
+	float CurriculumInitialSpawnRadius = 150.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Curriculum", meta = (EditCondition = "bEnableCurriculum"))
+	float CurriculumTargetSpawnRadius = 1200.0f;
+
+	// Fraction of recent episodes that must be successes to advance difficulty.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Curriculum", meta = (EditCondition = "bEnableCurriculum"))
+	float CurriculumAdvanceThreshold = 0.70f;
+
+	// Fraction below which difficulty is reduced.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Curriculum", meta = (EditCondition = "bEnableCurriculum"))
+	float CurriculumRetreatThreshold = 0.30f;
+
+	// Number of recent episodes used to compute the success rate.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Curriculum", meta = (EditCondition = "bEnableCurriculum"))
+	int32 CurriculumWindowSize = 20;
+
+	// How much difficulty [0,1] changes each update.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Curriculum", meta = (EditCondition = "bEnableCurriculum"))
+	float CurriculumStepSize = 0.05f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Curriculum")
+	float CurrentDifficulty = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gymansium|Curriculum")
+	float RollingSuccessRate = 0.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Debug")
 	bool bEnableDebugDraw = true;
 
@@ -165,6 +198,7 @@ private:
 	void UpdateDebugState(float RewardDelta);
 	void UpdateDebugVisualization(bool bTerminated, bool bTruncated);
 	void FinalizeEpisode(const FString& OutcomeLabel);
+	void UpdateCurriculum(bool bSuccess);
 
 	UPROPERTY()
 	FRandomStream RandomStream;
@@ -180,4 +214,6 @@ private:
 
 	UPROPERTY()
 	int32 LastSeed = 1337;
+
+	TArray<bool> CurriculumOutcomeWindow;
 };
