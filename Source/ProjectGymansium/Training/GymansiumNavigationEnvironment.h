@@ -9,6 +9,8 @@
 
 class AGymansiumGoalActor;
 class AGymansiumNavPawn;
+class AGymansiumObstacleActor;
+class UMaterialInterface;
 class USceneComponent;
 struct FBoxPoint;
 
@@ -81,6 +83,9 @@ public:
 	bool bRequireFacingForSuccess = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
+	float ProximitySlowRewardScale = 0.01f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
 	float NearGoalDistanceMultiplier = 1.5f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
@@ -94,6 +99,33 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
 	float OrbitTimeoutPenalty = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Obstacles")
+	int32 MinObstacleCount = 3;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Obstacles")
+	int32 MaxObstacleCount = 6;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Obstacles")
+	float MinimumObstacleSpacing = 150.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Obstacles")
+	float ObstacleClearRadius = 150.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Obstacles")
+	float ObstacleSpawnRadius = 450.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Obstacles")
+	float ObstacleScaleMin = 0.8f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Obstacles")
+	float ObstacleScaleMax = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Obstacles")
+	bool bReRandomizeObstaclesOnReset = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Obstacles")
+	TObjectPtr<UMaterialInterface> ObstacleMaterial;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Sensors")
 	int32 NumRaycastSensors = 8;
@@ -157,17 +189,23 @@ protected:
 
 private:
 	void EnsureActors();
+	void EnsureObstacles();
+	void DestroyObstacles();
 	void BuildObservation(TInstancedStruct<FPoint>& OutObservation);
 	void BuildStateObservation(FBoxPoint& OutStateObservation) const;
 	void DrawRaycastDebug() const;
 	FTransform MakeAgentSpawnTransform();
 	FVector MakeGoalLocation(const FVector& AgentLocation);
+	FVector MakeObstacleLocation(const TArray<FVector>& ExistingLocations);
 	float GetGoalDistance() const;
 	float GetSignedBearingToGoalDegrees() const;
 	FVector GetEnvironmentCenter() const;
 	void UpdateDebugState(float RewardDelta);
 	void UpdateDebugVisualization(bool bTerminated, bool bTruncated);
 	void FinalizeEpisode(const FString& OutcomeLabel);
+
+	UPROPERTY()
+	TArray<TObjectPtr<AGymansiumObstacleActor>> SpawnedObstacles;
 
 	UPROPERTY()
 	FRandomStream RandomStream;

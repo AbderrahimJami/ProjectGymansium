@@ -9,6 +9,7 @@
 #include "Spaces/BoxSpace.h"
 #include "GymansiumGoalActor.h"
 #include "GymansiumNavPawn.h"
+#include "GymansiumObstacleActor.h"
 
 AGymansiumNavigationEnvironment::AGymansiumNavigationEnvironment()
 {
@@ -27,6 +28,7 @@ void AGymansiumNavigationEnvironment::BeginPlay()
 {
 	Super::BeginPlay();
 	EnsureActors();
+	EnsureObstacles();
 }
 
 void AGymansiumNavigationEnvironment::InitializeEnvironment_Implementation(FInteractionDefinition& OutAgentDefinition)
@@ -51,6 +53,12 @@ void AGymansiumNavigationEnvironment::InitializeEnvironment_Implementation(FInte
 void AGymansiumNavigationEnvironment::Reset_Implementation(FInitialAgentState& OutAgentState)
 {
 	EnsureActors();
+
+	if (bReRandomizeObstaclesOnReset)
+	{
+		DestroyObstacles();
+		EnsureObstacles();
+	}
 
 	if (!IsValid(AgentPawn) || !IsValid(GoalActor))
 	{
@@ -132,14 +140,22 @@ void AGymansiumNavigationEnvironment::Step_Implementation(const FInstancedStruct
 	OutAgentState.Reward = (Progress * ProgressRewardScale) - TimePenalty;
 	OutAgentState.Reward += BearingImprovement * AlignmentRewardScale;
 
-	if (Throttle < 0.0f)
+	const bool bCollided = AgentPawn->WasLastMoveBlocked();
+
+	if (Throttle < 0.0f && !bCollided)
 	{
 		OutAgentState.Reward -= FMath::Abs(Throttle) * ReversePenaltyScale;
 	}
 
-	if (AgentPawn->WasLastMoveBlocked())
+	if (bCollided)
 	{
 		OutAgentState.Reward -= CollisionPenalty;
+	}
+
+	if (bNearGoal)
+	{
+		const float NormalizedSpeed = FMath::Clamp(AgentPawn->GetLastVelocity().Size() / FMath::Max(AgentPawn->MoveSpeed, 1.0f), 0.0f, 1.0f);
+		OutAgentState.Reward += (1.0f - NormalizedSpeed) * ProximitySlowRewardScale;
 	}
 
 	if (bOrbitingNearGoal)
@@ -280,6 +296,20 @@ void AGymansiumNavigationEnvironment::SetEnvironmentOptions_Implementation(const
 		OrbitTimeoutPenalty = FCString::Atof(**OrbitTimeoutPenaltyValue);
 	}
 
+	if (const FString* MinObsVal = Options.Find(TEXT("min_obstacle_count")))
+	{
+		MinObstacleCount = FMath::Max(FCString::Atoi(**MinObsVal), 0);
+	}
+
+	if (const FString* MaxObsVal = Options.Find(TEXT("max_obstacle_count")))
+	{
+		MaxObstacleCount = FMath::Max(FCString::Atoi(**MaxObsVal), 0);
+	}
+
+	if (const FString* ReRandomizeVal = Options.Find(TEXT("rerandomize_obstacles")))
+	{
+		bReRandomizeObstaclesOnReset = ReRandomizeVal->ToBool();
+	}
 }
 
 void AGymansiumNavigationEnvironment::EnsureActors()
@@ -305,6 +335,107 @@ void AGymansiumNavigationEnvironment::EnsureActors()
 		SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		GoalActor = World->SpawnActor<AGymansiumGoalActor>(GoalActorClass, FTransform(MakeGoalLocation(GetEnvironmentCenter())), SpawnParameters);
 	}
+}
+
+void AGymansiumNavigationEnvironment::EnsureObstacles()
+{
+	if (SpawnedObstacles.Num() > 0)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World || MaxObstacleCount <= 0)
+	{
+		return;
+	}
+
+	const int32 Count = RandomStream.RandRange(
+		FMath::Max(MinObstacleCount, 0),
+		FMath::Max(MaxObstacleCount, MinObstacleCount)
+	);
+
+	TArray<FVector> PlacedLocations;
+	PlacedLocations.Reserve(Count);
+
+	for (int32 i = 0; i < Count; ++i)
+	{
+		const FVector Location = MakeObstacleLocation(PlacedLocations);
+
+		const EGymansiumObstacleShape Shape = static_cast<EGymansiumObstacleShape>(RandomStream.RandRange(0, 2));
+		const float ScaleMultiplier = RandomStream.FRandRange(ObstacleScaleMin, ObstacleScaleMax);
+		const float Yaw = RandomStream.FRandRange(0.0f, 360.0f);
+
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = this;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+
+		AGymansiumObstacleActor* Obstacle = World->SpawnActor<AGymansiumObstacleActor>(
+			AGymansiumObstacleActor::StaticClass(),
+			FTransform(FRotator(0.0f, Yaw, 0.0f), Location),
+			SpawnParams
+		);
+
+		if (Obstacle)
+		{
+			if (ObstacleMaterial)
+			{
+				Obstacle->ObstacleMaterial = ObstacleMaterial;
+			}
+			Obstacle->SetShape(Shape);
+			Obstacle->SetActorScale3D(Obstacle->GetActorScale3D() * ScaleMultiplier);
+			SpawnedObstacles.Add(Obstacle);
+			PlacedLocations.Add(Location);
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("GymNav: Spawned %d obstacles (requested %d)"), SpawnedObstacles.Num(), Count);
+}
+
+void AGymansiumNavigationEnvironment::DestroyObstacles()
+{
+	for (TObjectPtr<AGymansiumObstacleActor>& Obstacle : SpawnedObstacles)
+	{
+		if (IsValid(Obstacle))
+		{
+			Obstacle->Destroy();
+		}
+	}
+	SpawnedObstacles.Empty();
+}
+
+FVector AGymansiumNavigationEnvironment::MakeObstacleLocation(const TArray<FVector>& ExistingLocations)
+{
+	const FVector Center = GetEnvironmentCenter();
+	const float MinDist = FMath::Max(ObstacleClearRadius, 1.0f);
+	const float MaxDist = FMath::Max(ObstacleSpawnRadius, MinDist + 1.0f);
+
+	FVector BestCandidate = Center + FVector(MinDist, 0.0f, 50.0f);
+
+	for (int32 Attempt = 0; Attempt < 16; ++Attempt)
+	{
+		const float Distance = RandomStream.FRandRange(MinDist, MaxDist);
+		const float Angle = RandomStream.FRandRange(0.0f, 2.0f * PI);
+		const FVector Candidate = Center + FVector(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 50.0f);
+
+		bool bTooClose = false;
+		for (const FVector& Placed : ExistingLocations)
+		{
+			if (FVector::Dist2D(Candidate, Placed) < MinimumObstacleSpacing)
+			{
+				bTooClose = true;
+				break;
+			}
+		}
+		if (bTooClose)
+		{
+			continue;
+		}
+
+		return Candidate;
+	}
+
+	return BestCandidate;
 }
 
 void AGymansiumNavigationEnvironment::BuildObservation(TInstancedStruct<FPoint>& OutObservation)
@@ -354,29 +485,63 @@ void AGymansiumNavigationEnvironment::BuildStateObservation(FBoxPoint& OutStateO
 FTransform AGymansiumNavigationEnvironment::MakeAgentSpawnTransform()
 {
 	const FVector Center = GetEnvironmentCenter();
-	const float Distance = RandomStream.FRandRange(0.0f, SpawnRadius);
-	const float Angle = RandomStream.FRandRange(0.0f, 2.0f * PI);
-	const FVector Offset(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 50.0f);
-	const FVector Location = Center + Offset;
+	UWorld* World = GetWorld();
+	const float CheckRadius = 40.0f; // slightly larger than pawn capsule radius (34)
 
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredActor(this);
+	if (IsValid(AgentPawn)) { QueryParams.AddIgnoredActor(AgentPawn); }
+	if (IsValid(GoalActor)) { QueryParams.AddIgnoredActor(GoalActor); }
+
+	for (int32 Attempt = 0; Attempt < 16; ++Attempt)
+	{
+		const float Distance = RandomStream.FRandRange(0.0f, SpawnRadius);
+		const float Angle = RandomStream.FRandRange(0.0f, 2.0f * PI);
+		const FVector Location = Center + FVector(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 50.0f);
+
+		if (World && World->OverlapBlockingTestByChannel(Location, FQuat::Identity, ECC_WorldStatic, FCollisionShape::MakeSphere(CheckRadius), QueryParams))
+		{
+			continue;
+		}
+
+		const float Yaw = RandomStream.FRandRange(-180.0f, 180.0f);
+		return FTransform(FRotator(0.0f, Yaw, 0.0f), Location);
+	}
+
+	// Fallback: return center if all attempts overlapped
 	const float Yaw = RandomStream.FRandRange(-180.0f, 180.0f);
-	return FTransform(FRotator(0.0f, Yaw, 0.0f), Location);
+	return FTransform(FRotator(0.0f, Yaw, 0.0f), Center + FVector(0.0f, 0.0f, 50.0f));
 }
 
 FVector AGymansiumNavigationEnvironment::MakeGoalLocation(const FVector& AgentLocation)
 {
 	const FVector Center = GetEnvironmentCenter();
+	UWorld* World = GetWorld();
+	const float CheckRadius = GoalRadius * 0.5f;
 	FVector Candidate = Center;
+
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredActor(this);
+	if (IsValid(AgentPawn)) { QueryParams.AddIgnoredActor(AgentPawn); }
+	if (IsValid(GoalActor)) { QueryParams.AddIgnoredActor(GoalActor); }
 
 	for (int32 Attempt = 0; Attempt < 16; ++Attempt)
 	{
 		const float Distance = RandomStream.FRandRange(0.0f, SpawnRadius);
 		const float Angle = RandomStream.FRandRange(0.0f, 2.0f * PI);
 		Candidate = Center + FVector(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 50.0f);
-		if (FVector::Dist2D(Candidate, AgentLocation) >= MinimumSpawnSeparation)
+
+		if (FVector::Dist2D(Candidate, AgentLocation) < MinimumSpawnSeparation)
 		{
-			return Candidate;
+			continue;
 		}
+
+		if (World && World->OverlapBlockingTestByChannel(Candidate, FQuat::Identity, ECC_WorldStatic, FCollisionShape::MakeSphere(CheckRadius), QueryParams))
+		{
+			continue;
+		}
+
+		return Candidate;
 	}
 
 	return Candidate;
@@ -498,7 +663,7 @@ void AGymansiumNavigationEnvironment::UpdateDebugVisualization(bool bTerminated,
 	if (bEnableOnScreenTelemetry && GEngine)
 	{
 		const FString Telemetry = FString::Printf(
-			TEXT("GymNav | Step %d/%d | Dist %.1f | Bearing %.1f | Facing %s | Reward %.3f | EpReward %.3f | Collided %s | EpColl %d | Orbit %d | Success %d | Timeout %d | Outcome %s"),
+			TEXT("GymNav | Step %d/%d | Dist %.1f | Bearing %.1f | Facing %s | Reward %.3f | EpReward %.3f | Collided %s | EpColl %d | Orbit %d | Obs %d | Success %d | Timeout %d | Outcome %s"),
 			CurrentStep,
 			MaxEpisodeSteps,
 			LastDistanceToGoal,
@@ -509,6 +674,7 @@ void AGymansiumNavigationEnvironment::UpdateDebugVisualization(bool bTerminated,
 			bLastStepCollided ? TEXT("Yes") : TEXT("No"),
 			EpisodeCollisionCount,
 			NearGoalOrbitSteps,
+			SpawnedObstacles.Num(),
 			SuccessCount,
 			TimeoutCount,
 			*LastEpisodeOutcome
