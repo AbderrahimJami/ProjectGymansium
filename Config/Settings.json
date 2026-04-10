@@ -1,0 +1,8 @@
+{
+    "bEnabled": true,
+    "CaptureIntervalSeconds": 1.0,
+    "ResolutionWidth": 512,
+    "ResolutionHeight": 512,
+    "CaptureMode": "BaseColor",
+    "OutputSubfolder": "CameraCaptures"
+}

@@ -95,12 +95,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Navigation")
 	float OrbitTimeoutPenalty = 1.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Vision")
-	int32 VisionObservationWidth = 84;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Vision")
-	int32 VisionObservationHeight = 84;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gymansium|Debug")
 	bool bEnableDebugDraw = true;
 
@@ -156,7 +150,6 @@ private:
 	void EnsureActors();
 	void BuildObservation(TInstancedStruct<FPoint>& OutObservation);
 	void BuildStateObservation(FBoxPoint& OutStateObservation) const;
-	void BuildImageObservation(FBoxPoint& OutImageObservation);
 	FTransform MakeAgentSpawnTransform();
 	FVector MakeGoalLocation(const FVector& AgentLocation);
 	float GetGoalDistance() const;

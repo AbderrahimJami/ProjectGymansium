@@ -3,10 +3,9 @@
 #include "GymansiumNavPawn.h"
 
 #include "Camera/CameraComponent.h"
+#include "ImageCaptureComponent.h"
 #include "Components/CapsuleComponent.h"
-#include "Components/SceneCaptureComponent2D.h"
 #include "Components/StaticMeshComponent.h"
-#include "Engine/TextureRenderTarget2D.h"
 #include "UObject/ConstructorHelpers.h"
 
 AGymansiumNavPawn::AGymansiumNavPawn()
@@ -35,18 +34,7 @@ AGymansiumNavPawn::AGymansiumNavPawn()
 	CameraComponent->SetRelativeLocation(FVector(-160.0f, 0.0f, 110.0f));
 	CameraComponent->SetRelativeRotation(FRotator(-15.0f, 0.0f, 0.0f));
 
-	VisionCaptureComponent = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("VisionCapture"));
-	VisionCaptureComponent->SetupAttachment(CapsuleComponent);
-	VisionCaptureComponent->SetRelativeLocation(FVector(45.0f, 0.0f, 45.0f));
-	VisionCaptureComponent->SetRelativeRotation(FRotator(0.0f, 0.0f, 0.0f));
-	VisionCaptureComponent->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
-	VisionCaptureComponent->bCaptureEveryFrame = false;
-	VisionCaptureComponent->bCaptureOnMovement = false;
-	VisionCaptureComponent->bAlwaysPersistRenderingState = true;
-
-	VisionRenderTarget = CreateDefaultSubobject<UTextureRenderTarget2D>(TEXT("VisionRenderTarget"));
-	EnsureVisionRenderTarget();
-	VisionCaptureComponent->TextureTarget = VisionRenderTarget;
+	ImageCaptureComponent = CreateDefaultSubobject<UImageCaptureComponent>(TEXT("ImageCapture"));
 
 	AutoPossessPlayer = EAutoReceiveInput::Disabled;
 	AutoPossessAI = EAutoPossessAI::Disabled;
@@ -89,68 +77,4 @@ FVector AGymansiumNavPawn::GetLastVelocity() const
 bool AGymansiumNavPawn::WasLastMoveBlocked() const
 {
 	return bLastMoveBlocked;
-}
-
-void AGymansiumNavPawn::ConfigureVisionCapture(int32 InWidth, int32 InHeight)
-{
-	VisionWidth = FMath::Max(InWidth, 1);
-	VisionHeight = FMath::Max(InHeight, 1);
-	EnsureVisionRenderTarget();
-}
-
-bool AGymansiumNavPawn::CaptureVisionObservation(TArray<float>& OutImageValues, TArray<int>& OutShape)
-{
-	EnsureVisionRenderTarget();
-	if (!VisionCaptureComponent || !VisionRenderTarget)
-	{
-		return false;
-	}
-
-	VisionCaptureComponent->CaptureScene();
-
-	TArray<FColor> Bitmap;
-	VisionRenderTarget->GameThread_GetRenderTargetResource()->ReadPixels(Bitmap);
-
-	const int32 Width = VisionRenderTarget->GetSurfaceWidth();
-	const int32 Height = VisionRenderTarget->GetSurfaceHeight();
-	const int32 NumPixels = Width * Height;
-	if (Bitmap.Num() != NumPixels)
-	{
-		return false;
-	}
-
-	OutImageValues.SetNumUninitialized(NumPixels * 3);
-	OutShape = { 3, Height, Width };
-
-	for (int32 PixelIndex = 0; PixelIndex < NumPixels; ++PixelIndex)
-	{
-		OutImageValues[PixelIndex] = static_cast<float>(Bitmap[PixelIndex].R) / 255.0f;
-		OutImageValues[PixelIndex + NumPixels] = static_cast<float>(Bitmap[PixelIndex].G) / 255.0f;
-		OutImageValues[PixelIndex + (2 * NumPixels)] = static_cast<float>(Bitmap[PixelIndex].B) / 255.0f;
-	}
-
-	return true;
-}
-
-void AGymansiumNavPawn::EnsureVisionRenderTarget()
-{
-	if (!VisionRenderTarget)
-	{
-		return;
-	}
-
-	const int32 TargetWidth = FMath::Max(VisionWidth, 1);
-	const int32 TargetHeight = FMath::Max(VisionHeight, 1);
-	if (VisionRenderTarget->GetSurfaceWidth() != TargetWidth || VisionRenderTarget->GetSurfaceHeight() != TargetHeight)
-	{
-		VisionRenderTarget->RenderTargetFormat = RTF_RGBA8;
-		VisionRenderTarget->bGPUSharedFlag = true;
-		VisionRenderTarget->InitAutoFormat(TargetWidth, TargetHeight);
-		VisionRenderTarget->UpdateResourceImmediate(true);
-	}
-
-	if (VisionCaptureComponent)
-	{
-		VisionCaptureComponent->TextureTarget = VisionRenderTarget;
-	}
 }
