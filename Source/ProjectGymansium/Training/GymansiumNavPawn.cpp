@@ -34,7 +34,7 @@ AGymansiumNavPawn::AGymansiumNavPawn()
 	CameraComponent->SetRelativeLocation(FVector(-160.0f, 0.0f, 110.0f));
 	CameraComponent->SetRelativeRotation(FRotator(-15.0f, 0.0f, 0.0f));
 
-	ImageCaptureComponent = CreateDefaultSubobject<UImageCaptureComponent>(TEXT("ImageCapture"));
+	// ImageCaptureComponent = CreateDefaultSubobject<UImageCaptureComponent>(TEXT("ImageCapture"));
 
 	AutoPossessPlayer = EAutoReceiveInput::Disabled;
 	AutoPossessAI = EAutoPossessAI::Disabled;

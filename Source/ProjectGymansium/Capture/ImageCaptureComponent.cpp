@@ -2,19 +2,21 @@
 
 #include "ImageCaptureComponent.h"
 
+#include "ImageWriteQueue.h"
+#include "ImageWriteTask.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Engine/TextureRenderTarget2D.h"
-#include "HAL/PlatformFileManager.h"
-#include "ImageUtils.h"
-#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "RHIGPUReadback.h"
+#include "TextureResource.h"
 #include "TimerManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogImageCapture, Log, All);
 
 UImageCaptureComponent::UImageCaptureComponent()
 {
-	PrimaryComponentTick.bCanEverTick = false;
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
 	bAutoActivate = true;
 }
 
@@ -34,6 +36,16 @@ void UImageCaptureComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	StopCapture();
 	Super::EndPlay(EndPlayReason);
+}
+
+void UImageCaptureComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	if (bReadbackInFlight && PendingReadback && PendingReadback->IsReady())
+	{
+		ProcessReadback();
+	}
 }
 
 bool UImageCaptureComponent::LoadSettings()
@@ -82,6 +94,11 @@ void UImageCaptureComponent::StartCapture()
 	IFileManager::Get().MakeDirectory(*OutputDir, true);
 
 	CaptureSequenceNumber = 0;
+	bReadbackInFlight = false;
+	PendingReadback.Reset();
+
+	SetComponentTickEnabled(true);
+
 	World->GetTimerManager().SetTimer(
 		CaptureTimerHandle,
 		this,
@@ -104,6 +121,9 @@ void UImageCaptureComponent::StopCapture()
 		World->GetTimerManager().ClearTimer(CaptureTimerHandle);
 	}
 
+	SetComponentTickEnabled(false);
+	bReadbackInFlight = false;
+	PendingReadback.Reset();
 	DestroyCaptureResources();
 }
 
@@ -130,56 +150,119 @@ void UImageCaptureComponent::OnCaptureTimer()
 		return;
 	}
 
-	CaptureComponent->CaptureScene();
+	// Skip if a readback is still in flight — don't pile up
+	if (bReadbackInFlight)
+	{
+		return;
+	}
 
+	CaptureComponent->CaptureScene();
+	PendingSequenceNumber = CaptureSequenceNumber;
+	++CaptureSequenceNumber;
+	EnqueueReadback();
+}
+
+void UImageCaptureComponent::EnqueueReadback()
+{
 	FTextureRenderTargetResource* Resource = RenderTarget->GameThread_GetRenderTargetResource();
 	if (!Resource)
 	{
 		return;
 	}
 
+	FTextureRHIRef TextureRHI = Resource->GetRenderTargetTexture();
+	if (!TextureRHI.IsValid())
+	{
+		return;
+	}
+
+	PendingReadback = MakeUnique<FRHIGPUTextureReadback>(FName(TEXT("ImageCaptureReadback")));
+	bReadbackInFlight = true;
+
+	FRHIGPUTextureReadback* Readback = PendingReadback.Get();
+
+	ENQUEUE_RENDER_COMMAND(ImageCaptureEnqueueCopy)(
+		[Readback, TextureRHI](FRHICommandListImmediate& RHICmdList)
+		{
+			Readback->EnqueueCopy(RHICmdList, TextureRHI);
+		});
+}
+
+void UImageCaptureComponent::ProcessReadback()
+{
+	if (!PendingReadback || !RenderTarget)
+	{
+		bReadbackInFlight = false;
+		return;
+	}
+
 	const int32 Width = RenderTarget->GetSurfaceWidth();
 	const int32 Height = RenderTarget->GetSurfaceHeight();
-	const bool bIsDepth = CaptureComponent->CaptureSource == ESceneCaptureSource::SCS_SceneDepth;
+	const bool bIsDepth = CaptureComponent && CaptureComponent->CaptureSource == ESceneCaptureSource::SCS_SceneDepth;
+
+	int32 RowPitchInPixels = 0;
+	void* RawData = PendingReadback->Lock(RowPitchInPixels);
+
+	if (!RawData)
+	{
+		UE_LOG(LogImageCapture, Warning, TEXT("Failed to lock readback buffer for capture #%lld"), PendingSequenceNumber);
+		PendingReadback->Unlock();
+		PendingReadback.Reset();
+		bReadbackInFlight = false;
+		return;
+	}
 
 	TArray<FColor> Bitmap;
 
 	if (bIsDepth)
 	{
-		TArray<FLinearColor> LinearBitmap;
-		Resource->ReadLinearColorPixels(LinearBitmap);
-		if (LinearBitmap.Num() != Width * Height)
-		{
-			UE_LOG(LogImageCapture, Warning, TEXT("ReadLinearColorPixels failed for capture #%lld"), CaptureSequenceNumber);
-			return;
-		}
+		// Float16 RGBA data — read R channel as depth, normalize to grayscale
+		const FFloat16Color* SrcData = static_cast<const FFloat16Color*>(RawData);
 
-		// Find max depth for normalization (R channel holds depth in world units)
+		// First pass: find max depth
 		float MaxDepth = 1.0f;
-		for (const FLinearColor& Pixel : LinearBitmap)
+		for (int32 Row = 0; Row < Height; ++Row)
 		{
-			if (FMath::IsFinite(Pixel.R) && Pixel.R > MaxDepth)
+			const FFloat16Color* RowPtr = SrcData + (Row * RowPitchInPixels);
+			for (int32 Col = 0; Col < Width; ++Col)
 			{
-				MaxDepth = Pixel.R;
+				const float Depth = RowPtr[Col].R.GetFloat();
+				if (FMath::IsFinite(Depth) && Depth > MaxDepth)
+				{
+					MaxDepth = Depth;
+				}
 			}
 		}
 
-		Bitmap.SetNum(LinearBitmap.Num());
-		for (int32 i = 0; i < LinearBitmap.Num(); ++i)
+		// Second pass: normalize to grayscale
+		Bitmap.SetNum(Width * Height);
+		for (int32 Row = 0; Row < Height; ++Row)
 		{
-			const float Depth = FMath::IsFinite(LinearBitmap[i].R) ? LinearBitmap[i].R : MaxDepth;
-			const uint8 Gray = static_cast<uint8>(FMath::Clamp(Depth / MaxDepth, 0.0f, 1.0f) * 255.0f);
-			Bitmap[i] = FColor(Gray, Gray, Gray, 255);
+			const FFloat16Color* RowPtr = SrcData + (Row * RowPitchInPixels);
+			for (int32 Col = 0; Col < Width; ++Col)
+			{
+				const float Depth = RowPtr[Col].R.GetFloat();
+				const float NormDepth = FMath::IsFinite(Depth) ? Depth : MaxDepth;
+				const uint8 Gray = static_cast<uint8>(FMath::Clamp(NormDepth / MaxDepth, 0.0f, 1.0f) * 255.0f);
+				Bitmap[Row * Width + Col] = FColor(Gray, Gray, Gray, 255);
+			}
 		}
 	}
 	else
 	{
-		if (!Resource->ReadPixels(Bitmap))
+		// RGBA8 data
+		const FColor* SrcData = static_cast<const FColor*>(RawData);
+		Bitmap.SetNum(Width * Height);
+		for (int32 Row = 0; Row < Height; ++Row)
 		{
-			UE_LOG(LogImageCapture, Warning, TEXT("ReadPixels failed for capture #%lld"), CaptureSequenceNumber);
-			return;
+			const FColor* RowPtr = SrcData + (Row * RowPitchInPixels);
+			FMemory::Memcpy(&Bitmap[Row * Width], RowPtr, Width * sizeof(FColor));
 		}
 	}
+
+	PendingReadback->Unlock();
+	PendingReadback.Reset();
+	bReadbackInFlight = false;
 
 	// Force alpha to fully opaque — some capture modes (Normal, BaseColor) return alpha=0
 	for (FColor& Pixel : Bitmap)
@@ -189,31 +272,27 @@ void UImageCaptureComponent::OnCaptureTimer()
 
 	const FDateTime Now = FDateTime::Now();
 	const FString Timestamp = Now.ToString(TEXT("%Y%m%d_%H%M%S"));
-	const FString FileName = FString::Printf(TEXT("%s_%s_%06lld.png"), *Settings.CaptureMode, *Timestamp, CaptureSequenceNumber);
+	const FString FileName = FString::Printf(TEXT("%s_%s_%06lld.png"), *Settings.CaptureMode, *Timestamp, PendingSequenceNumber);
 	const FString FilePath = FPaths::Combine(GetOutputDirectory(), FileName);
 
-	SaveImageToDisk(Bitmap, Width, Height, FilePath);
-	++CaptureSequenceNumber;
+	EnqueueAsyncWrite(MoveTemp(Bitmap), Width, Height, FilePath);
 }
 
-void UImageCaptureComponent::SaveImageToDisk(const TArray<FColor>& Bitmap, int32 Width, int32 Height, const FString& FilePath)
+void UImageCaptureComponent::EnqueueAsyncWrite(TArray<FColor>&& Bitmap, int32 Width, int32 Height, const FString& FilePath)
 {
-	TArray64<uint8> CompressedData;
-	FImageUtils::PNGCompressImageArray(Width, Height, Bitmap, CompressedData);
+	TArray64<FColor> Pixels64(MoveTemp(Bitmap));
 
-	if (CompressedData.Num() == 0)
-	{
-		UE_LOG(LogImageCapture, Warning, TEXT("PNG compression failed for: %s"), *FilePath);
-		return;
-	}
+	TUniquePtr<FImageWriteTask> Task = MakeUnique<FImageWriteTask>();
+	Task->PixelData = MakeUnique<TImagePixelData<FColor>>(FIntPoint(Width, Height), MoveTemp(Pixels64));
+	Task->Filename = FilePath;
+	Task->Format = EImageFormat::PNG;
+	Task->CompressionQuality = 100;
+	Task->bOverwriteFile = true;
 
-	if (!FFileHelper::SaveArrayToFile(CompressedData, *FilePath))
-	{
-		UE_LOG(LogImageCapture, Warning, TEXT("Failed to write file: %s"), *FilePath);
-		return;
-	}
+	IImageWriteQueueModule& WriteQueueModule = FModuleManager::LoadModuleChecked<IImageWriteQueueModule>("ImageWriteQueue");
+	WriteQueueModule.GetWriteQueue().Enqueue(MoveTemp(Task));
 
-	UE_LOG(LogImageCapture, Verbose, TEXT("Saved capture: %s (%dx%d)"), *FilePath, Width, Height);
+	UE_LOG(LogImageCapture, Verbose, TEXT("Enqueued async write: %s (%dx%d)"), *FilePath, Width, Height);
 }
 
 FString UImageCaptureComponent::GetSettingsFilePath() const
