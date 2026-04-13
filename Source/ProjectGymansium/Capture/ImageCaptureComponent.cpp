@@ -42,6 +42,12 @@ void UImageCaptureComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
+	if (bCapturePending && !bReadbackInFlight)
+	{
+		bCapturePending = false;
+		EnqueueReadback();
+	}
+
 	if (bReadbackInFlight && PendingReadback && PendingReadback->IsReady())
 	{
 		ProcessReadback();
@@ -95,6 +101,7 @@ void UImageCaptureComponent::StartCapture()
 
 	CaptureSequenceNumber = 0;
 	bReadbackInFlight = false;
+	bCapturePending = false;
 	PendingReadback.Reset();
 
 	SetComponentTickEnabled(true);
@@ -123,6 +130,7 @@ void UImageCaptureComponent::StopCapture()
 
 	SetComponentTickEnabled(false);
 	bReadbackInFlight = false;
+	bCapturePending = false;
 	PendingReadback.Reset();
 	DestroyCaptureResources();
 }
@@ -150,16 +158,16 @@ void UImageCaptureComponent::OnCaptureTimer()
 		return;
 	}
 
-	// Skip if a readback is still in flight — don't pile up
-	if (bReadbackInFlight)
+	// Skip if a readback or deferred capture is still pending — don't pile up
+	if (bReadbackInFlight || bCapturePending)
 	{
 		return;
 	}
 
-	CaptureComponent->CaptureScene();
+	CaptureComponent->CaptureSceneDeferred();
 	PendingSequenceNumber = CaptureSequenceNumber;
 	++CaptureSequenceNumber;
-	EnqueueReadback();
+	bCapturePending = true;
 }
 
 void UImageCaptureComponent::EnqueueReadback()
@@ -372,6 +380,26 @@ void UImageCaptureComponent::CreateCaptureResources()
 	CaptureComponent->bCaptureOnMovement = false;
 	CaptureComponent->bAlwaysPersistRenderingState = true;
 	CaptureComponent->TextureTarget = RenderTarget;
+
+	// Strip expensive post-process effects to reduce capture cost
+	FEngineShowFlags& Flags = CaptureComponent->ShowFlags;
+	Flags.SetAntiAliasing(false);
+	Flags.SetMotionBlur(false);
+	Flags.SetBloom(false);
+	Flags.SetEyeAdaptation(false);
+	Flags.SetLocalExposure(false);
+	Flags.SetScreenSpaceReflections(false);
+	Flags.SetAmbientOcclusion(false);
+	Flags.SetDepthOfField(false);
+	Flags.SetVolumetricFog(false);
+	Flags.SetGrain(false);
+	Flags.SetVignette(false);
+	Flags.SetSeparateTranslucency(false);
+
+	// Reduce scene complexity for capture
+	CaptureComponent->LODDistanceFactor = 3.0f;
+	CaptureComponent->MaxViewDistanceOverride = 5000.0f;
+
 	CaptureComponent->RegisterComponent();
 }
 
