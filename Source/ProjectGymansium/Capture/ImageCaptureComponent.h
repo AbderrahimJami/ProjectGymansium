@@ -67,5 +67,6 @@ private:
 
 	TUniquePtr<FRHIGPUTextureReadback> PendingReadback;
 	bool bReadbackInFlight = false;
+	bool bCapturePending = false;
 	int64 PendingSequenceNumber = 0;
 };
